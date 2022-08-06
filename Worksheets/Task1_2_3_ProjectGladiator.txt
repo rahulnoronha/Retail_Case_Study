@@ -1,0 +1,137 @@
+--Task 1: Create database retail_db and schema retail_schema
+create or replace database retail_db;
+
+use database retail_db;
+
+create or replace schema retail_schema;
+
+use schema retail_schema;
+
+--Task 2: Create 8 retail tables based on the diagram and apply cluster keys on the most used column for querying.
+--Task 3: Add the table definition with constraints , unicode and data retention.
+
+CREATE OR REPLACE TABLE Region
+(
+  R_REGIONKEY number PRIMARY KEY ENFORCED,
+  R_NAME varchar(30),
+  R_COMMENT varchar(1000)
+)
+CLUSTER BY (R_NAME)
+DATA_RETENTION_TIME_IN_DAYS = 90
+STAGE_FILE_FORMAT = (TYPE=CSV, ENCODING=UTF8)
+;
+
+CREATE OR REPLACE TABLE Nation
+(
+  N_NATIONKEY number PRIMARY KEY ENFORCED,
+  N_NAME varchar(30),
+  N_REGIONKEY number references REGION(R_REGIONKEY) ENFORCED,
+  N_COMMENT varchar(1000)
+)
+CLUSTER BY (N_NAME)
+DATA_RETENTION_TIME_IN_DAYS = 90
+STAGE_FILE_FORMAT = (TYPE=CSV, ENCODING=UTF8)
+;
+
+
+CREATE OR REPLACE TABLE Supplier
+(
+  S_SUPPKEY number PRIMARY KEY ENFORCED,
+  S_NAME varchar(30),
+  S_ADDRESS varchar(50),
+  S_NATIONKEY number references NATION(N_NATIONKEY) ENFORCED,
+  S_PHONE varchar(20),
+  S_ACCTBAL float,
+  S_COMMENT varchar(1000)
+)
+CLUSTER BY (S_NAME, S_ACCTBAL)
+DATA_RETENTION_TIME_IN_DAYS = 90
+STAGE_FILE_FORMAT = (TYPE=CSV, ENCODING=UTF8)
+;
+
+CREATE OR REPLACE TABLE Part
+(
+  P_PARTKEY number PRIMARY KEY ENFORCED,
+  P_NAME varchar(60),
+  P_MFGR varchar(30),  
+  P_BRAND varchar(20),
+  P_TYPE varchar(30),
+  P_SIZE number,
+  P_CONTAINER varchar(20),
+  P_RETAILPRICE float,
+  P_COMMENT varchar(1000)
+)
+CLUSTER BY (P_NAME, P_SIZE, P_RETAILPRICE)
+DATA_RETENTION_TIME_IN_DAYS = 90
+STAGE_FILE_FORMAT = (TYPE=CSV, ENCODING=UTF8)
+;
+
+CREATE OR REPLACE TABLE PartSupp
+(
+  PS_PARTKEY number UNIQUE references PART(P_PARTKEY) ENFORCED,
+  PS_SUPPKEY number UNIQUE references SUPPLIER(S_SUPPKEY) ENFORCED,
+  PS_AVAILQTY number,
+  PS_SUPPLYCOST float,
+  PS_COMMENT varchar(1000)
+)
+CLUSTER BY (PS_AVAILQTY, PS_SUPPLYCOST)
+DATA_RETENTION_TIME_IN_DAYS = 90
+STAGE_FILE_FORMAT = (TYPE=CSV, ENCODING=UTF8)
+;
+
+CREATE OR REPLACE TABLE Customer
+(
+  C_CUSTKEY number PRIMARY KEY ENFORCED,
+  C_NAME varchar(30),
+  C_ADDRESS varchar(50),
+  C_NATIONKEY number references NATION(N_NATIONKEY) ENFORCED,
+  C_PHONE varchar(20),
+  C_ACCTBAL float,
+  C_MKTSEGMENT varchar(20),
+  C_COMMENT varchar(1000)
+)
+CLUSTER BY (C_NAME, C_ACCTBAL)
+DATA_RETENTION_TIME_IN_DAYS = 90
+STAGE_FILE_FORMAT = (TYPE=CSV, ENCODING=UTF8)
+;
+
+CREATE OR REPLACE TABLE Orders
+(
+  O_ORDERKEY number PRIMARY KEY ENFORCED,
+  O_CUSTKEY number references CUSTOMER(C_CUSTKEY) ENFORCED,
+  O_ORDERSTATUS varchar(10),
+  O_TOTALPRICE float,
+  O_ORDERDATE date,
+  O_ORDERPRIORITY varchar(20),
+  O_CLERK varchar(20),
+  O_SHIPPRIORITY number,
+  O_COMMENT varchar(1000)
+)
+CLUSTER BY (O_ORDERDATE, O_TOTALPRICE )
+DATA_RETENTION_TIME_IN_DAYS = 90
+STAGE_FILE_FORMAT = (TYPE=CSV, ENCODING=UTF8)
+;
+
+CREATE OR REPLACE TABLE LineItem
+(
+  L_ORDERKEY number references ORDERS(O_ORDERKEY) ENFORCED,
+  L_PARTKEY number references PARTSUPP(PS_PARTKEY) ENFORCED,
+  L_SUPPKEY number references PARTSUPP(PS_SUPPKEY) ENFORCED,
+  L_LINENUMBER number,
+  L_QUANTITY float,
+  L_EXTENDEDPRICE float,
+  L_DISCOUNT float,
+  L_TAX float,
+  L_RETURNFLAG varchar(10),
+  L_LINESTATUS varchar(10),
+  L_SHIPDATE date,
+  L_COMMITDATE date,
+  L_RECEIPTDATE date,
+  L_SHIPINSTRUCT varchar(30),
+  L_SHIPMODE varchar(20),
+  L_COMMENT varchar(1000)
+)
+CLUSTER BY (L_QUANTITY, L_EXTENDEDPRICE, L_DISCOUNT, L_TAX)
+DATA_RETENTION_TIME_IN_DAYS = 90
+STAGE_FILE_FORMAT = (TYPE=CSV, ENCODING=UTF8)
+;

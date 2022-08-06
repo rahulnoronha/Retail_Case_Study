@@ -1,0 +1,15 @@
+
+CREATE OR REPLACE PROCEDURE date_format(rnddate varchar)
+returns varchar
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS $$
+BEGIN
+INSERT INTO CDC_ORDERS VALUES(22222,250,'F',231311.22,to_date(:rnddate,'DD/MM/YYYY'),'2-HIGH','Clerk#000000449',
+                              0,'quiet ideas sleep. even instructions cajole slyly. silently spe',current_timestamp());
+return  0;                              
+END $$;
+
+CALL date_format('24/07/2022');
+
+SELECT * FROM CDC_ORDERS WHERE O_ORDERKEY=22222;

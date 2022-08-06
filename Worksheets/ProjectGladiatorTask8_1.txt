@@ -1,0 +1,162 @@
+desc integration s3_int;
+
+CREATE OR REPLACE TABLE CDC_Orders
+(
+  O_ORDERKEY number PRIMARY KEY ENFORCED,
+  O_CUSTKEY number references CUSTOMER(C_CUSTKEY) ENFORCED,
+  O_ORDERSTATUS varchar(10),
+  O_TOTALPRICE float,
+  O_ORDERDATE date,
+  O_ORDERPRIORITY varchar(20),
+  O_CLERK varchar(20),
+  O_SHIPPRIORITY number,
+  O_COMMENT varchar(1000),
+  update_timestamp timestamp_ntz default current_timestamp()::timestamp_ntz
+);
+
+CREATE OR REPLACE TABLE Orders_History
+(
+  O_ORDERKEY number PRIMARY KEY ENFORCED,
+  O_CUSTKEY number references CUSTOMER(C_CUSTKEY) ENFORCED,
+  O_ORDERSTATUS varchar(10),
+  O_TOTALPRICE float,
+  O_ORDERDATE date,
+  O_ORDERPRIORITY varchar(20),
+  O_CLERK varchar(20),
+  O_SHIPPRIORITY number,
+  O_COMMENT varchar(1000),
+  start_time timestamp_ntz,
+  end_time timestamp_ntz,
+  current_flag int
+);
+
+CREATE OR REPLACE FILE FORMAT csv_ff TYPE='CSV' COMPRESSION='AUTO' FIELD_DELIMITER='\t'
+RECORD_DELIMITER='\n' SKIP_HEADER=1 FIELD_OPTIONALLY_ENCLOSED_BY='NONE' TRIM_SPACE=FALSE ERROR_ON_COLUMN_COUNT_MISMATCH=TRUE ESCAPE='NONE' 
+ESCAPE_UNENCLOSED_FIELD='\134' DATE_FORMAT='AUTO' TIMESTAMP_FORMAT='AUTO' NULL_IF=('\\N');
+
+CREATE OR REPLACE FILE FORMAT "RETAIL_DB"."RETAIL_SCHEMA".CSV_FF_one COMPRESSION = 'AUTO' FIELD_DELIMITER = '\t' RECORD_DELIMITER = '\n' 
+SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY = 'NONE' TRIM_SPACE = FALSE ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE 
+ESCAPE = 'NONE' ESCAPE_UNENCLOSED_FIELD = '\134' DATE_FORMAT = 'AUTO' TIMESTAMP_FORMAT = 'AUTO' NULL_IF = ('\\N');
+
+create or replace stage CDC_Orders storage_integration=s3_int
+url='s3://lti1034-rahulnoronha/' file_format=csv_ff_one;
+
+create or replace pipe snowpipe_orders auto_ingest=TRUE as copy into CDC_Orders from @CDC_Orders;
+
+SELECT * from CDC_Orders order by O_ORDERKEY DESC LIMIT 10;
+
+
+
+-- SCD /CDC
+show stages;
+
+use role sysadmin;
+create or replace stream orders_table_changes on table CDC_Orders;
+
+show streams;
+
+select * from orders_table_changes;
+
+create or replace view order_change_data as
+-- This subquery figures out what to do when data is inserted into the CDC_Orders table
+-- An insert to the CDC_Orders table results in an INSERT to the Orders_History table
+select O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, 
+O_COMMENT, start_time, end_time, current_flag, 'I' as dml_type
+from (select O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT,
+             update_timestamp as start_time,
+             lag(update_timestamp) over (partition by O_ORDERKEY order by update_timestamp desc) as end_time_raw,
+             case when end_time_raw is null then '9999-12-31'::timestamp_ntz else end_time_raw end as end_time,
+             case when end_time_raw is null then 1 else 0 end as current_flag
+      from (select O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT, update_timestamp
+            from orders_table_changes
+            where metadata$action = 'INSERT'
+            and metadata$isupdate = 'FALSE'))
+union
+-- This subquery figures out what to do when data is updated in the CDC_Orders table
+-- An update to the NATION table results in an update AND an insert to the Orders_History table
+-- The subquery below generates two records, each with a different dml_type
+select O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT, start_time, end_time, 
+current_flag, dml_type
+from (select O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT,
+             update_timestamp as start_time,
+             lag(update_timestamp) over (partition by O_ORDERKEY order by update_timestamp desc) as end_time_raw,
+             case when end_time_raw is null then '9999-12-31'::timestamp_ntz else end_time_raw end as end_time,
+             case when end_time_raw is null then 1 else 0 end as current_flag, 
+             dml_type
+      from (-- Identify data to insert into Orders_History table
+            select O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT, update_timestamp, 
+'I' as dml_type
+            from orders_table_changes
+            where metadata$action = 'INSERT'
+            and metadata$isupdate = 'TRUE'
+            union
+            -- Identify data in Orders_History table that needs to be updated
+            select O_ORDERKEY, null, null, null, null,null, null, null, null, start_time, 'U' as dml_type
+            from Orders_History
+            where O_ORDERKEY in (select distinct O_ORDERKEY 
+                                  from orders_table_changes
+                                  where metadata$action = 'INSERT'
+                                  and metadata$isupdate = 'TRUE')
+     and current_flag = 1))
+union
+-- This subquery figures out what to do when data is deleted from the CDC_Orders table
+-- A deletion from the NATION table results in an update to the Orders_History table
+select oms.O_ORDERKEY, null, null, null, null, null, null, null, null, oh.start_time, current_timestamp()::timestamp_ntz, null, 'D'
+from Orders_History oh
+inner join orders_table_changes oms
+   on oh.O_ORDERKEY = oms.O_ORDERKEY
+where oms.metadata$action = 'DELETE'
+and   oms.metadata$isupdate = 'FALSE'
+and   oh.current_flag = 1;
+
+select * from order_change_data;
+
+
+create or replace task populate_orders_history warehouse = COMPUTE_WH
+schedule = '2 minute' when system$stream_has_data('orders_table_changes')
+as
+merge into Orders_History oh -- Target table to merge changes from CDC_Orders into
+using order_change_data m -- order_change_data is a view that holds the logic that determines what to insert/update into the Orders_History table.
+   on  oh.O_ORDERKEY = m.O_ORDERKEY -- O_ORDERKEY and start_time determine whether there is a unique record in the Orders_History table
+   and oh.start_time = m.start_time
+when matched and m.dml_type = 'U' then update -- Indicates the record has been updated and is no longer current and the end_time needs to be stamped
+    set oh.end_time = m.end_time,
+        oh.current_flag = 0
+when matched and m.dml_type = 'D' then update -- Deletes are essentially logical deletes. The record is stamped and no newer version is inserted
+    set oh.end_time = m.end_time,
+        oh.current_flag = 0
+when not matched and m.dml_type = 'I' then insert -- Inserting a new O_ORDERKEY and updating an existing one both result in an insert
+           (O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, 
+            O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT, start_time, end_time, current_flag)
+    values (m.O_ORDERKEY, m.O_CUSTKEY, m.O_ORDERSTATUS, m.O_TOTALPRICE, m.O_ORDERDATE, 
+    m.O_ORDERPRIORITY, m.O_CLERK, m.O_SHIPPRIORITY, m.O_COMMENT, m.start_time, m.end_time, m.current_flag);
+
+-- To drop the task use: drop task populate_orders_history;
+show pipes;
+
+select current_timestamp()::timestamp_ntz;
+
+select * from Orders_History;
+
+update CDC_Orders SET update_timestamp=current_timestamp();
+
+update Orders_History SET start_time=current_timestamp();
+
+merge into Orders_History oh -- Target table to merge changes from CDC_Orders into
+using order_change_data m -- order_change_data is a view that holds the logic that determines what to insert/update into the Orders_History table.
+   on  oh.O_ORDERKEY = m.O_ORDERKEY -- O_ORDERKEY and start_time determine whether there is a unique record in the Orders_History table
+   and oh.start_time = m.start_time
+when matched and m.dml_type = 'U' then update -- Indicates the record has been updated and is no longer current and the end_time needs to be stamped
+    set oh.end_time = m.end_time,
+        oh.current_flag = 0
+when matched and m.dml_type = 'D' then update -- Deletes are essentially logical deletes. The record is stamped and no newer version is inserted
+    set oh.end_time = m.end_time,
+        oh.current_flag = 0
+when not matched and m.dml_type = 'I' then insert -- Inserting a new O_ORDERKEY and updating an existing one both result in an insert
+           (O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, 
+            O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT, start_time, end_time, current_flag)
+    values (m.O_ORDERKEY, m.O_CUSTKEY, m.O_ORDERSTATUS, m.O_TOTALPRICE, m.O_ORDERDATE, 
+    m.O_ORDERPRIORITY, m.O_CLERK, m.O_SHIPPRIORITY, m.O_COMMENT, m.start_time, m.end_time, m.current_flag);
+
+
+

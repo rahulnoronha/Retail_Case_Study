@@ -1,0 +1,64 @@
+--In place Join
+CREATE OR REPLACE SECURE VIEW InPlaceJoin AS
+SELECT AVG(l.L_QUANTITY) as AVERAGE_L_QUANTITY FROM LINEITEM l, ORDERS o WHERE
+l.L_ORDERKEY=o.O_ORDERKEY;
+
+SELECT * FROM InPlaceJoin;
+
+CREATE OR REPLACE SECURE VIEW CustomerOrdersNationJoin AS
+SELECT N.N_NAME, SUM(O.O_TOTALPRICE) AS SUM_O_TOTALPRICE
+FROM ORDERS O, CUSTOMER C, NATION N
+WHERE
+N.N_NATIONKEY=C.C_NATIONKEY
+AND C.C_CUSTKEY=O.O_CUSTKEY
+AND O.O_ORDERDATE LIKE '1995%'
+GROUP BY N.N_NAME;
+
+SELECT * from CustomerOrdersNationJoin;
+
+--This query ranks customers based on their having placed a large quantity order. 
+--Large quantity orders are defined as those orders whose total quantity is above a certain level.
+CREATE OR REPLACE SECURE VIEW LARGE_QUANTITY_ORDERS AS
+SELECT c_name,c_custkey,o_orderkey,o_orderdate,o_totalprice,SUM(l_quantity) AS quantity
+FROM customer
+INNER JOIN orders ON c_custkey = o_custkey
+INNER JOIN lineitem ON o_orderkey = l_orderkey
+WHERE o_orderkey IN (SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING sum(l_quantity) > 250)
+GROUP BY c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice
+ORDER BY o_totalprice DESC, o_orderdate;
+
+SELECT * FROM  LARGE_QUANTITY_ORDERS;
+
+--This query determines how much profit is made on a given line of parts, broken out by supplier nation and year.
+CREATE OR REPLACE SECURE VIEW PART_PROFIT AS
+SELECT nation,o_year,SUM(amount) AS sum_profit
+FROM (
+SELECT n_name AS nation,
+extract(year FROM o_orderdate) AS o_year,
+l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount
+FROM part
+INNER JOIN lineitem ON p_partkey = l_partkey
+INNER JOIN supplier ON s_suppkey = l_suppkey
+INNER JOIN partsupp ON ps_suppkey = l_suppkey and ps_partkey = l_partkey
+INNER JOIN orders ON o_orderkey = l_orderkey
+INNER JOIN nation ON s_nationkey = n_nationkey
+WHERE p_name like '%lavender%') AS profit
+GROUP BY nation,  o_year
+ORDER BY nation,  o_year DESC;
+
+SELECT * FROM PART_PROFIT;
+
+--PK/FK JOIN---------
+
+CREATE OR REPLACE SECURE VIEW PK_FK_JOIN AS
+SELECT AVG (P_RETAILPRICE*L_QUANTITY) AS AVERAGE_PR_LQ FROM PART, LINEITEM WHERE P_PARTKEY= L_PARTKEY;
+
+SELECT * FROM PK_FK_JOIN;
+
+--PART,LINEITEM JOIN ON UNRELATED COLOUMN--------
+
+CREATE OR REPLACE SECURE VIEW P_L_JOIN AS
+SELECT SUM(L_QUANTITY) AS SUM_L_QUANTITY FROM PART,LINEITEM 
+WHERE P_PARTKEY = L_SUPPKEY;
+
+SELECT * FROM P_L_JOIN;
